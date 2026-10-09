@@ -3,8 +3,9 @@ PLAN: "feat!: explicit replica ids — NewForReplica(replica, last), monotonic u
 TAG: v0.3.0
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 12097594903892710160
+PR: https://github.com/webtyp/unixid/pull/3
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
