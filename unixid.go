@@ -7,6 +7,9 @@ import (
 	. "webtyp.com/fmt"
 )
 
+// replicaSeparator joins the timestamp and the replica: "<nanoseconds>.<replica>".
+const replicaSeparator = "."
+
 var now = time.Now
 
 // Replica identifies one device that mints ids while offline. The server assigns it
@@ -43,7 +46,7 @@ func NewForReplica(replica Replica, last int64) (*UnixID, error) {
 	}
 	return &UnixID{
 		last:   last,
-		suffix: "." + Convert(uint32(replica)).String(),
+		suffix: replicaSeparator + Convert(uint32(replica)).String(),
 	}, nil
 }
 
