@@ -10,10 +10,9 @@ UnixID provides functionality for generating and managing unique identifiers wit
 - High-performance ID generation based on Unix nanosecond timestamps
 - Thread-safe concurrent ID generation
 - Built-in collision avoidance through sequential numbering
-- Support for both server-side and client-side (WebAssembly) environments
 - Date conversion utilities for timestamp-to-date formatting
-- Smart environment detection for automatic configuration
 - Versatile ID assignment for strings, struct fields and byte slices
+- Explicit assignment for server and offline devices (replicas)
 
 ## Installation
 
@@ -23,12 +22,21 @@ go get webtyp.com/unixid
 
 ## Quick Start
 
+### What generator should I use?
+
+| I want... | Use... |
+| --------- | ------ |
+| Server ids | `NewUnixID()` |
+| Offline device ids | `NewForReplica(replica, last)` |
+| Read an id back | `Parse` |
+
 ### Server-side Usage
 
 ```go
 package main
 
 import (
+	"fmt"
 	"webtyp.com/unixid"
 )
 
@@ -47,21 +55,35 @@ func main() {
 }
 ```
 
-### Client-side (WebAssembly) Usage
+### Offline Device (Replica) Usage
 
-For WebAssembly environments, you need to provide a session number handler:
+For offline devices, you provide a replica number (assigned by the server) and the last timestamp generated. The `last` parameter is necessary because a device restarted after its clock moved backwards must not repeat an id.
 
 ```go
-// Example session handler implementation
-type sessionHandler struct{}
+package main
 
-func (sessionHandler) userSessionNumber() string {
-	// In a real application, this would return the user's session number
-	return "42"
+import (
+	"fmt"
+	"webtyp.com/unixid"
+)
+
+func main() {
+	// Replicas must be > 0. A replica number of 0 returns an error.
+	var myReplica unixid.Replica = 42
+
+	// last is the timestamp part of the newest id this replica already minted.
+	var lastIdTimestamp int64 = 0
+	
+	idHandler, err := unixid.NewForReplica(myReplica, lastIdTimestamp)
+	if err != nil {
+		panic(err)
+	}
+	
+	id := idHandler.NewID()
+	
+	fmt.Printf("Generated ID: %s\n", id)
+	// Output: Generated ID: 1624397134562544800.42
 }
-
-// Create a new UnixID handler with session handler
-idHandler, err := unixid.NewUnixID(&sessionHandler{})
 ```
 
 ## ID Format
@@ -69,88 +91,19 @@ idHandler, err := unixid.NewUnixID(&sessionHandler{})
 The generated IDs follow this format:
 
 - Server-side: `[unix_timestamp_in_nanoseconds]` (e.g., `1624397134562544800`)
-- Client-side: `[unix_timestamp_in_nanoseconds].[user_session_number]` (e.g., `1624397134562544800.42`)
+- Replica: `[unix_timestamp_in_nanoseconds].[replica]` (e.g., `1624397134562544800.42`)
 
-## Thread Safety & Avoiding Deadlocks
-
-The library handles concurrent ID generation safely through mutex locking in server-side environments.
-
-**IMPORTANT**: When integrating this library with other libraries that also use `sync.Mutex`, infinite deadlocks can occur. To avoid this issue, you can pass an existing mutex when initializing UnixID:
-
-```go
-package main
-
-import (
-	"fmt"
-	"sync"
-	"webtyp.com/unixid"
-	"github.com/someother/library"
-)
-
-func main() {
-	// Create a shared mutex
-	var mu sync.Mutex
-	
-	// Pass the shared mutex to UnixID
-	idHandler, err := unixid.NewUnixID(&mu)
-	if (err != nil) {
-		panic(err)
-	}
-	
-	// Pass the same mutex to other libraries if they support it
-	otherLib := library.New(&mu)
-	
-	// Now both libraries will use the same mutex,
-	// preventing deadlocks when they need to lock resources
-}
-```
-
-### Deadlock Prevention with External Mutex
-
-When an external mutex is provided to `NewUnixID()`, the library automatically detects this and changes its behavior:
-
-1. Instead of using the provided mutex internally, it switches to a no-op mutex that doesn't perform any actual locking.
-2. This allows `NewID()` to be safely called from within a context that has already acquired the same mutex.
-
-Example of using `NewID()` inside a locked context:
-
-```go
-var mu sync.Mutex
-idHandler, err := unixid.NewUnixID(&mu)
-if err != nil {
-    panic(err)
-}
-
-// Later in your code...
-mu.Lock()
-defer mu.Unlock()
-
-// This won't deadlock because internally the library uses a no-op mutex
-// when an external mutex is provided
-id := idHandler.NewID()
-// Do something with id...
-```
-
-This behavior assumes that external synchronization is being properly handled by the caller, eliminating the risk of deadlocks when the same mutex is used in nested contexts.
+IDs of one generator sort lexicographically while timestamps have 19 digits (until year 2286).
 
 ## API Reference
 
 ### Core Functions
 
-- `NewUnixID(...)`: Creates a new UnixID handler for ID generation with automatic environment detection
-  - In server environments, no parameters are required
-  - In WebAssembly environments, requires a userSessionNumber implementation
-  - Uses build tags (`wasm` or `!wasm`) to determine the appropriate implementation
-  - Thread-safe in server environments with mutex locking
-  - No mutex in WebAssembly as JavaScript is single-threaded
-  - Can accept an existing `sync.Mutex` or `*sync.Mutex` to prevent deadlocks when integrating with other libraries
-
-- `NewID()`: Generates a new unique ID
-  - Returns a string representation of the ID
-  - In WebAssembly builds, appends a user session number to the timestamp
+- `NewUnixID()`: Creates a new UnixID handler for ID generation on servers. Server ids are generated without a suffix.
+- `NewForReplica(replica Replica, last int64)`: Creates a UnixID handler for an offline device. `replica` must be > 0.
+- `NewID()`: Generates a new unique ID and returns it as a string.
 
 - `SetNewID(target *string)`: Generates a new unique ID and assigns it to target
-  - Thread-safe in server environments
   - Example usages:
     ```go
     // Set ID to a string variable
@@ -164,28 +117,11 @@ This behavior assumes that external synchronization is being properly handled by
     ```
 
 - `Validate(id string) error`: Validates the format of an ID string without parsing it
-  - Fast validation for checking ID format
   - Returns error if format is invalid
-  - Example usage:
-    ```go
-    err := idHandler.Validate("1624397134562544800")
-    if err != nil {
-        // Invalid ID format
-    }
-    ```
 
-- `Parse(id string) (timestamp int64, userNum string, error)`: Parses an ID string and extracts its components
-  - Validates format first, then extracts timestamp and optional user number
-  - Returns timestamp as int64, userNum as string (empty if not present)
-  - Example usage:
-    ```go
-    timestamp, userNum, err := idHandler.Parse("1624397134562544800.42")
-    if err != nil {
-        // Invalid ID format
-    }
-    fmt.Printf("Timestamp: %d, UserNum: %s\n", timestamp, userNum)
-    // Output: Timestamp: 1624397134562544800, UserNum: 42
-    ```
+- `Parse(id string) (timestamp int64, replica Replica, error)`: Parses an ID string and extracts its components
+  - Validates format first, then extracts timestamp and optional replica
+  - Returns timestamp as int64, replica as `Replica` (0 if minted by server)
 
 ## Validate and Parse IDs
 
@@ -219,7 +155,7 @@ func main() {
 
 ### Parsing ID Components
 
-Use `Parse()` when you need to extract the timestamp and user number:
+Use `Parse()` when you need to extract the timestamp and replica:
 
 ```go
 package main
@@ -233,40 +169,22 @@ func main() {
 	idHandler, _ := unixid.NewUnixID()
 	
 	// Parse server-side ID
-	timestamp, userNum, err := idHandler.Parse("1624397134562544800")
+	timestamp, replica, err := idHandler.Parse("1624397134562544800")
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Timestamp: %d, UserNum: %s\n", timestamp, userNum)
-	// Output: Timestamp: 1624397134562544800, UserNum: 
+	fmt.Printf("Timestamp: %d, Replica: %v\n", timestamp, replica)
+	// Output: Timestamp: 1624397134562544800, Replica: 0
 	
-	// Parse client-side ID
-	timestamp, userNum, err = idHandler.Parse("1624397134562544800.42")
+	// Parse offline device ID
+	timestamp, replica, err = idHandler.Parse("1624397134562544800.42")
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Timestamp: %d, UserNum: %s\n", timestamp, userNum)
-	// Output: Timestamp: 1624397134562544800, UserNum: 42
+	fmt.Printf("Timestamp: %d, Replica: %v\n", timestamp, replica)
+	// Output: Timestamp: 1624397134562544800, Replica: 42
 }
 ```
-
-
-
-## Environment-Based Configuration
-
-UnixID automatically detects the compilation environment and configures itself appropriately:
-
-- **Server-side (`!wasm` build tag)**: 
-  - Uses Go's standard `time` package
-  - Implements mutex-based thread safety
-  - Generates simple timestamp-based IDs
-
-- **WebAssembly (`wasm` build tag)**:
-  - Uses JavaScript's Date API through `syscall/js`
-  - Requires a session handler to manage user identifiers
-  - Appends a user session number to IDs for cross-client uniqueness
-
-This automatic configuration allows you to use the same API in both environments while the library handles the implementation details internally.
 
 ## [Contributing](https://github.com/webtyp/cdvelop/blob/main/CONTRIBUTING.md)
 ---

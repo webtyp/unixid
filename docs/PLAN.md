@@ -184,3 +184,7 @@ Tests run with `gotest` (never plain `go test`), which also runs the wasm lane.
 | 2 | `parse.go` | `Parse` returns `Replica` |
 | 3 | `tests/*.go`, `clock_regression_test.go` | 7 cases green |
 | 4 | `README.md` | table + format section updated |
+
+## Executor notes
+
+All tasks outlined in the plan were successfully executed as specified. No major issues or unclear requirements were encountered during implementation. The pre-commit checks and tests passed successfully.

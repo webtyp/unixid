@@ -1,13 +1,13 @@
 package unixid__test
 
 import (
-	. "webtyp.com/unixid"
 	"sync"
 	"testing"
 	"time"
+	. "webtyp.com/unixid"
 )
 
-// TestGetNewIDWithCorrectFormatting prueba el flujo completo de generación de IDs
+// Test_GetNewID prueba el flujo completo de generación de IDs
 func Test_GetNewID(t *testing.T) {
 	idRequired := 10000
 	wg := sync.WaitGroup{}
@@ -35,16 +35,13 @@ func Test_GetNewID(t *testing.T) {
 				idObtained[id] = 1
 			}
 			esperar.Unlock()
-
 		}()
 	}
 	wg.Wait()
 
-	// fmt.Printf("total id requeridos: %v ob: %v\n", idRequired, len(idObtained))
 	if idRequired != len(idObtained) {
 		t.Fatalf("se esperaban: %d ids pero se obtuvieron: %d. Detalle: %v", idRequired, len(idObtained), idObtained)
 	}
-
 }
 
 func BenchmarkGetNewID(b *testing.B) {
@@ -63,7 +60,6 @@ func TestNoDuplicateIDs(t *testing.T) {
 		return
 	}
 
-	// Generar una cantidad moderada de IDs y verificar que no haya duplicados
 	numIDs := 1000
 	ids := make(map[string]bool)
 
@@ -84,14 +80,11 @@ func TestSequentialIDs(t *testing.T) {
 		return
 	}
 
-	// Generar varios IDs rápidamente, algunos tendrán el mismo timestamp base
-	// pero deberían tener números secuenciales añadidos
 	ids := make([]string, 10)
 	for i := 0; i < 10; i++ {
 		ids[i] = uid.NewID()
 	}
 
-	// Verificar que tengamos al menos algunos IDs diferentes
 	uniqueIDs := make(map[string]bool)
 	for _, id := range ids {
 		uniqueIDs[id] = true
@@ -102,58 +95,141 @@ func TestSequentialIDs(t *testing.T) {
 	}
 }
 
-// TestExternalMutexNoDeadlock verifica que cuando se proporciona un mutex externo,
-// la llamada a NewID no se bloquee cuando ya hay un lock adquirido con el mismo mutex.
-// Esta prueba verifica el comportamiento actualizado donde se usa un no-op mutex internamente
-// cuando se proporciona un mutex externo para prevenir deadlocks.
-func TestExternalMutexNoDeadlock(t *testing.T) {
-	// Creamos un mutex externo que simula ser compartido con otra biblioteca
-	externalMutex := &sync.Mutex{}
+func TestNewForReplica_Zero(t *testing.T) {
+	uid, err := NewForReplica(0, 0)
+	if uid != nil {
+		t.Errorf("expected nil generator for replica 0")
+	}
+	if err == nil || err.Error() != ErrReplicaZero.Error() {
+		t.Errorf("expected error %q, got %v", ErrReplicaZero.Error(), err)
+	}
+}
 
-	// Creamos una instancia de UnixID pasando el mutex externo
-	uid, err := NewUnixID(externalMutex)
+func TestNewForReplica_Suffix(t *testing.T) {
+	uid, err := NewForReplica(42, 0)
 	if err != nil {
-		t.Fatalf("Error creando UnixID con mutex externo: %v", err)
-		return
+		t.Fatal(err)
 	}
 
-	// Simulamos un escenario donde otra biblioteca bloquea el mutex
-	// y luego nuestro código lo utiliza
-	externalMutex.Lock()
-	defer externalMutex.Unlock()
+	idStr := uid.NewID()
+	timestamp, replica, err := uid.Parse(idStr)
+	if err != nil {
+		t.Fatalf("unexpected error parsing ID %s: %v", idStr, err)
+	}
+	if replica != 42 {
+		t.Errorf("expected replica 42, got %d", replica)
+	}
+	if timestamp == 0 {
+		t.Errorf("expected non-zero timestamp")
+	}
+}
 
-	// Definimos un canal para detectar si hay deadlock
-	done := make(chan bool)
-	go func() {
-		// Esto NO debería bloquearse con la nueva lógica, ya que
-		// internamente estamos usando un defaultNoOpMutex
-		id := uid.NewID()
-		if id == "" {
-			t.Error("Se generó un ID vacío")
-		}
-		done <- true
-	}()
-
-	// Esperamos brevemente para ver si se completa la generación del ID
-	select {
-	case <-done:
-		// Este es el comportamiento esperado: NewID no se bloquea
-		// porque internamente estamos usando un defaultNoOpMutex
-	case <-time.After(time.Millisecond * 500):
-		t.Fatal("NewID se bloqueó a pesar de usar un no-op mutex internamente")
+func TestNewUnixID_Server(t *testing.T) {
+	uid, err := NewUnixID()
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// Verificación adicional: generar varios IDs sin problemas mientras el mutex está bloqueado
-	ids := make(map[string]bool)
-	for i := 0; i < 10; i++ {
-		id := uid.NewID()
-		if id == "" {
-			t.Fatalf("Se generó un ID vacío en la iteración %d", i)
-		}
+	idStr := uid.NewID()
+	timestamp, replica, err := uid.Parse(idStr)
+	if err != nil {
+		t.Fatalf("unexpected error parsing ID %s: %v", idStr, err)
+	}
+	if replica != 0 {
+		t.Errorf("expected replica 0, got %d", replica)
+	}
+	if timestamp == 0 {
+		t.Errorf("expected non-zero timestamp")
+	}
 
-		if _, exists := ids[id]; exists {
-			t.Fatalf("ID duplicado encontrado: %s", id)
+	// Check for no '.' in server ID
+	for _, c := range idStr {
+		if c == '.' {
+			t.Errorf("expected no '.' in server ID %s", idStr)
 		}
-		ids[id] = true
+	}
+}
+
+func TestMonotonic(t *testing.T) {
+	uid, err := NewUnixID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lastTimestamp int64
+	for i := 0; i < 100000; i++ {
+		idStr := uid.NewID()
+		timestamp, _, err := uid.Parse(idStr)
+		if err != nil {
+			t.Fatalf("unexpected error parsing ID %s: %v", idStr, err)
+		}
+		if i > 0 && timestamp <= lastTimestamp {
+			t.Fatalf("IDs not monotonic: previous %d, current %d", lastTimestamp, timestamp)
+		}
+		lastTimestamp = timestamp
+	}
+}
+
+func TestConcurrency(t *testing.T) {
+	uid, err := NewUnixID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	numGoroutines := 8
+	idsPerGoroutine := 10000
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	var mu sync.Mutex
+	allIDs := make(map[string]bool)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			localIDs := make([]string, idsPerGoroutine)
+			for j := 0; j < idsPerGoroutine; j++ {
+				localIDs[j] = uid.NewID()
+			}
+
+			mu.Lock()
+			for _, id := range localIDs {
+				if allIDs[id] {
+					t.Errorf("Duplicate ID found: %s", id)
+				}
+				allIDs[id] = true
+			}
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+
+	if len(allIDs) != numGoroutines*idsPerGoroutine {
+		t.Errorf("Expected %d IDs, but got %d", numGoroutines*idsPerGoroutine, len(allIDs))
+	}
+}
+
+func TestLastHonoured(t *testing.T) {
+	far := time.Now().UnixNano() + 3600e9
+	uid, err := NewForReplica(7, far)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idStr := uid.NewID()
+	timestamp, replica, err := uid.Parse(idStr)
+	if err != nil {
+		t.Fatalf("unexpected error parsing ID %s: %v", idStr, err)
+	}
+
+	if replica != 7 {
+		t.Errorf("expected replica 7, got %d", replica)
+	}
+
+	expectedTimestamp := far + 1
+	if timestamp != expectedTimestamp {
+		t.Errorf("expected timestamp %d, got %d", expectedTimestamp, timestamp)
 	}
 }

@@ -1,107 +1,62 @@
 package unixid
 
 import (
-	. "webtyp.com/fmt"
+	"sync"
 	"webtyp.com/time"
+
+	. "webtyp.com/fmt"
 )
 
-const sizeBuf = int32(19)
+var now = time.Now
 
-// lockHandler represents a mutex-like locking mechanism for thread safety
-type lockHandler interface {
-	Lock()
-	Unlock()
-}
+// Replica identifies one device that mints ids while offline. The server assigns it
+// (never this library). 0 is not a valid replica: it means "minted by a server".
+type Replica uint32
 
-// userSessionNumber is an interface to obtain the current user's session number
-type userSessionNumber interface {
-	userSessionNumber() string
-}
+type idError string
 
-// defaultEmptySession provides a default implementation of userSessionNumber
-type defaultEmptySession struct{}
+func (e idError) Error() string { return string(e) }
 
-func (defaultEmptySession) userSessionNumber() string {
-	return ""
-}
-
-// defaultNoOpMutex provides a mutex implementation that doesn't perform any locking
-type defaultNoOpMutex struct{}
-
-func (defaultNoOpMutex) Lock()   {}
-func (defaultNoOpMutex) Unlock() {}
+const ErrReplicaZero idError = "unixid: replica 0 is reserved for servers"
 
 // UnixID is the main struct for ID generation and handling
 type UnixID struct {
-	userNum           string
-	lastUnixNano      int64
-	correlativeNumber int64
-	buf               []byte
-	*Config
+	mu     sync.Mutex
+	last   int64
+	suffix string
 }
 
-// Config holds the configuration for a UnixID instance
-type Config struct {
-	Session   userSessionNumber
-	syncMutex lockHandler
-}
-
-// NewUnixID creates a new UnixID handler with appropriate configuration based on the runtime environment.
-func NewUnixID(handlerUserSessionNumber ...any) (*UnixID, error) {
-	return createUnixID(handlerUserSessionNumber...)
-}
-
-func configCheck(c *Config) (*UnixID, error) {
-	if c == nil {
-		return nil, Err("required", "configuration", "options")
-	}
-
-	if c.Session == nil {
-		return nil, Err("required", "session", "handler")
-	}
-
-	if c.syncMutex == nil {
-		return nil, Err("required", "sync", "Mutex")
-	}
-
+// NewUnixID returns the server generator: ids are "<nanoseconds>" with no suffix.
+// The error is always nil today; it is kept so both constructors share one shape.
+func NewUnixID() (*UnixID, error) {
 	return &UnixID{
-		userNum:           "",
-		lastUnixNano:      0,
-		correlativeNumber: 0,
-		buf:               make([]byte, 0, sizeBuf),
-		Config:            c,
+		suffix: "",
 	}, nil
 }
 
-func (id *UnixID) unixIdNano() string {
-	currentUnixNano := time.Now()
-
-	if currentUnixNano == id.lastUnixNano {
-		id.correlativeNumber++
-	} else {
-		id.correlativeNumber = 0
+// NewForReplica returns a generator for one device: ids are "<nanoseconds>.<replica>".
+// last is the timestamp part of the newest id this replica already minted (0 on a fresh
+// device); every id this generator returns has a timestamp strictly greater than last.
+func NewForReplica(replica Replica, last int64) (*UnixID, error) {
+	if replica == 0 {
+		return nil, ErrReplicaZero
 	}
-	id.lastUnixNano = currentUnixNano
-	currentUnixNano += id.correlativeNumber
-
-	return Convert(currentUnixNano).String()
+	return &UnixID{
+		last:   last,
+		suffix: "." + Convert(uint32(replica)).String(),
+	}, nil
 }
 
 // NewID generates a new unique ID based on Unix nanosecond timestamp (UTC).
 func (id *UnixID) NewID() string {
-	id.syncMutex.Lock()
-	defer id.syncMutex.Unlock()
+	id.mu.Lock()
+	defer id.mu.Unlock()
 
-	outID := id.unixIdNano()
-
-	if id.userNum == "" {
-		id.userNum = id.Session.userSessionNumber()
+	current := now()
+	if current <= id.last {
+		current = id.last + 1
 	}
+	id.last = current
 
-	if id.userNum != "" {
-		outID += "."
-		outID += id.userNum
-	}
-
-	return outID
+	return Convert(current).String() + id.suffix
 }
