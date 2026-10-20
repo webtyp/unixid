@@ -10,7 +10,8 @@ import (
 // replicaSeparator joins the timestamp and the replica: "<nanoseconds>.<replica>".
 const replicaSeparator = "."
 
-var now = time.Now
+// now is the clock of the ids: an id is the nanosecond instant it was made, written as a number.
+var now = func() int64 { return int64(time.NowNano()) }
 
 // Replica identifies one device that mints ids while offline. The server assigns it
 // (never this library). 0 is not a valid replica: it means "minted by a server".
